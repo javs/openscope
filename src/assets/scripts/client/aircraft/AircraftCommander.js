@@ -8,7 +8,6 @@ import {
     radio_spellOut
 } from '../utilities/radioUtilities';
 import {
-    FLIGHT_MODES,
     FLIGHT_PHASE,
     FLIGHT_CATEGORY
 } from '../constants/aircraftConstants';
@@ -74,13 +73,14 @@ export default class AircraftCommander {
 
         let response = [];
         let response_end = '';
+        let redResponse = false;
         const deferred = [];
 
         for (let i = 0; i < commands.length; i++) {
             const command = commands[i][0];
             const args = commands[i].splice(1);
 
-            if (command === FLIGHT_MODES.TAKEOFF) {
+            if (command === FLIGHT_PHASE.TAKEOFF) {
                 deferred.push([command, args]);
 
                 continue;
@@ -89,6 +89,10 @@ export default class AircraftCommander {
             let retval = this.run(aircraft, command, args);
 
             if (retval) {
+                if (!retval[0]) {
+                    redResponse = true;
+                }
+
                 if (!_has(retval[1], 'log') || !_has(retval[1], 'say')) {
                     // TODO: reassigning a value using itself is dangerous. this should be re-wroked
                     retval = [
@@ -114,6 +118,9 @@ export default class AircraftCommander {
             const retval = this.run(aircraft, command, args);
 
             if (retval) {
+                if (!retval[0]) {
+                    redResponse = true;
+                }
                 // TODO: fix the logic here this very purposly using `!=`. length is not an object and thus,
                 // never null but by using coercion it evaluates to falsey if its not an array
                 // true if array, and not log/say object
@@ -131,8 +138,8 @@ export default class AircraftCommander {
 
         if (commands.length === 0) {
             response = [{
-                say: 'not understood',
-                log: 'not understood'
+                say: 'say again',
+                log: 'say again'
             }];
             response_end = 'say again';
         }
@@ -145,7 +152,7 @@ export default class AircraftCommander {
             const r_log = _map(response, (r) => r.log).join(', ');
             const r_say = _map(response, (r) => r.say).join(', ');
 
-            this._uiController.ui_log(`${aircraft.callsign}, ${r_log} ${response_end}`);
+            this._uiController.ui_log(`${aircraft.callsign}, ${r_log} ${response_end}`, redResponse);
             speech_say([
                 { type: 'callsign', content: aircraft },
                 { type: 'text', content: `${r_say} ${response_end}` }
@@ -216,8 +223,13 @@ export default class AircraftCommander {
         const direction = data[0];
         const heading = data[1];
         const incremental = data[2];
+        const readback = aircraft.pilot.maintainHeading(aircraft.heading, heading, direction, incremental);
 
-        return aircraft.pilot.maintainHeading(aircraft.heading, heading, direction, incremental);
+        if (readback[0] && direction) {
+            aircraft.target.turn = direction;
+        }
+
+        return readback;
     }
 
     /**
@@ -230,9 +242,9 @@ export default class AircraftCommander {
      */
     runClearedAsFiled(aircraft) {
         const airport = window.airportController.airport_get();
-        const { angle: runwayHeading } = airport.getRunway(aircraft.rwy_dep);
+        const { angle: runwayHeading } = airport.getRunway(aircraft.fms.departureRunway);
 
-        return aircraft.pilot.clearedAsFiled(airport.initial_alt, runwayHeading, aircraft.model.speed.cruise);
+        return aircraft.pilot.clearedAsFiled();
     }
 
     /**
@@ -343,7 +355,7 @@ export default class AircraftCommander {
      */
     runSID(aircraft, data) {
         const sidId = data[0];
-        const departureRunway = aircraft.rwy_dep;
+        const departureRunway = aircraft.fms.departureRunway;
         const { icao: airportIcao } = this._airportController.airport_get();
         const response = aircraft.pilot.applyDepartureProcedure(sidId, departureRunway, airportIcao);
 
@@ -365,7 +377,7 @@ export default class AircraftCommander {
      */
     runSTAR(aircraft, data) {
         const routeString = data[0];
-        const arrivalRunway = aircraft.rwy_arr;
+        const arrivalRunway = aircraft.fms.arrivalRunway;
         const { name: airportName } = this._airportController.airport_get();
 
         return aircraft.pilot.applyArrivalProcedure(routeString, arrivalRunway, airportName);
@@ -429,9 +441,12 @@ export default class AircraftCommander {
      * @return {array}   [success of operation, readback]
      */
     runTaxi(aircraft, data) {
+        if (aircraft.isAirborne()) {
+            return [false, 'unable to taxi, we\'re already airborne'];
+        }
         let taxiDestination = data[0];
         const isDeparture = aircraft.category === FLIGHT_CATEGORY.DEPARTURE;
-        const flightPhase = aircraft.mode;
+        const flightPhase = aircraft.flightPhase;
 
         // Set the runway to taxi to
         if (!taxiDestination) {
@@ -444,12 +459,11 @@ export default class AircraftCommander {
             return [false, `no runway ${taxiDestination.toUpperCase()}`];
         }
 
-        const readback = aircraft.pilot.taxiToRunway(runway.name, isDeparture, flightPhase);
+        const readback = aircraft.pilot.taxiToRunway(runway, isDeparture, flightPhase);
 
         // TODO: this may need to live in a method on the aircraft somewhere
-        aircraft.rwy_dep = runway.name;
+        aircraft.fms.departureRunway = runway;
         aircraft.taxi_start = this._gameController.game_time();
-        aircraft.mode = FLIGHT_MODES.TAXI;
 
         runway.addAircraftToQueue(aircraft);
         aircraft.setFlightPhase(FLIGHT_PHASE.TAXI);
@@ -473,12 +487,12 @@ export default class AircraftCommander {
         const aircraft = args[0];
         const uiController = args[1];
 
-        aircraft.mode = FLIGHT_MODES.WAITING;
+        aircraft.setFlightPhase(FLIGHT_PHASE.WAITING);
 
-        uiController.ui_log(`${aircraft.callsign}, holding short of runway ${aircraft.rwy_dep}`);
+        uiController.ui_log(`${aircraft.callsign}, holding short of runway ${aircraft.fms.departureRunway}`);
         speech_say([
             { type: 'callsign', content: aircraft },
-            { type: 'text', content: `holding short of runway ${radio_runway(aircraft.rwy_dep)}` }
+            { type: 'text', content: `holding short of runway ${radio_runway(aircraft.fms.departureRunway)}` }
         ]);
     }
 
@@ -490,55 +504,62 @@ export default class AircraftCommander {
      */
     runTakeoff(aircraft) {
         const airport = this._airportController.airport_get();
-        const runway = airport.getRunway(aircraft.rwy_dep);
+        const runway = airport.getRunway(aircraft.fms.departureRunway);
         // TODO: this should be a method on the Runway. `findAircraftPositionInQueue(aircraft)`
         const spotInQueue = runway.positionOfAircraftInQueue(aircraft);
+        const isInQueue = spotInQueue > -1;
         const aircraftAhead = runway.queue[spotInQueue - 1];
         const wind = airport.getWind();
         const roundedWindAngleInDegrees = round(radiansToDegrees(wind.angle) / 10) * 10;
         const roundedWindSpeed = round(wind.speed);
         const readback = {};
 
+        if (!isInQueue) {
+            return [false, 'unable to take off, we\'re completely lost'];
+        }
+
         if (!aircraft.isOnGround()) {
             return [false, 'unable to take off, we\'re already airborne'];
         }
 
-        if (aircraft.mode === FLIGHT_MODES.APRON) {
+        if (aircraft.flightPhase === FLIGHT_PHASE.APRON) {
             return [false, 'unable to take off, we\'re still at the gate'];
         }
 
-        if (aircraft.mode === FLIGHT_MODES.TAXI) {
-            readback.log = `unable to take off, we're still taxiing to runway ${aircraft.rwy_dep}`;
-            readback.say = `unable to take off, we're still taxiing to runway ${radio_runway(aircraft.rwy_dep)}`;
+        if (aircraft.flightPhase === FLIGHT_PHASE.TAXI) {
+            readback.log = `unable to take off, we're still taxiing to runway ${aircraft.fms.departureRunway}`;
+            readback.say = `unable to take off, we're still taxiing to runway ${radio_runway(aircraft.fms.departureRunway)}`;
 
             return [false, readback];
         }
 
-        if (aircraft.mode === FLIGHT_MODES.TAKEOFF) {
+        if (aircraft.flightPhase === FLIGHT_PHASE.TAKEOFF) {
             return [false, 'already taking off'];
         }
 
-        // TODO: the logic here should be reversed to handle falsey inside the if block
-        if (runway.removeQueue(aircraft)) {
-            aircraft.mode = FLIGHT_MODES.TAKEOFF;
-            aircraft.takeoffTime = this._gameController.game_time();
+        if (spotInQueue > 0) {
+            readback.log = `number ${spotInQueue} behind ${aircraftAhead.callsign}`;
+            readback.say = `number ${spotInQueue} behind ${aircraftAhead.getRadioCallsign()}`;
 
-            aircraft.setFlightPhase(FLIGHT_PHASE.TAKEOFF);
-            aircraft.pilot.initiateTakeoff();
-            aircraft.scoreWind('taking off');
-
-            readback.log = `wind ${roundedWindAngleInDegrees} at ${roundedWindSpeed}, runway ${aircraft.rwy_dep}, ` +
-                'cleared for takeoff';
-            readback.say = `wind ${radio_spellOut(roundedWindAngleInDegrees)} at ` +
-                `${radio_spellOut(roundedWindSpeed)}, runway ${radio_runway(aircraft.rwy_dep)}, cleared for takeoff`;
-
-            return [true, readback];
+            return [false, readback];
         }
 
-        readback.log = `number ${spotInQueue} behind ${aircraftAhead.callsign}`;
-        readback.say = `number ${spotInQueue} behind ${aircraftAhead.getRadioCallsign()}`;
+        if (!aircraft.pilot.hasDepartureClearance) {
+            return [false, 'unable to take off, we never received an IFR clearance'];
+        }
 
-        return [false, readback];
+        runway.removeAircraftFromQueue(aircraft);
+        aircraft.pilot.configureForTakeoff(airport.initial_alt, runway, aircraft.model.speed.cruise);
+        aircraft.takeoffTime = this._gameController.game_time();
+        aircraft.setFlightPhase(FLIGHT_PHASE.TAKEOFF);
+        aircraft.scoreWind('taking off');
+
+        readback.log = `wind ${roundedWindAngleInDegrees} at ${roundedWindSpeed}, runway ${aircraft.fms.departureRunway}, ` +
+            'cleared for takeoff';
+        readback.say = `wind ${radio_spellOut(roundedWindAngleInDegrees)} at ` +
+            `${radio_spellOut(roundedWindSpeed)}, runway ${radio_runway(aircraft.fms.departureRunway)}, cleared for takeoff`;
+
+        return [true, readback];
     }
 
     /**
@@ -568,14 +589,14 @@ export default class AircraftCommander {
     runAbort(aircraft) {
         const airport = this._airportController.airport_get();
 
-        switch (aircraft.mode) {
-            case FLIGHT_MODES.TAXI:
+        switch (aircraft.flightPhase) {
+            case FLIGHT_PHASE.TAXI:
                 return aircraft.pilot.stopOutboundTaxiAndReturnToGate();
-            case FLIGHT_MODES.WAITING:
+            case FLIGHT_PHASE.WAITING:
                 return aircraft.pilot.stopWaitingInRunwayQueueAndReturnToGate();
-            case FLIGHT_MODES.LANDING:
+            case FLIGHT_PHASE.LANDING:
                 return aircraft.pilot.goAround(aircraft.heading, aircraft.speed, airport.elevation);
-            case FLIGHT_MODES.CRUISE:
+            case FLIGHT_PHASE.APPROACH:
                 return aircraft.pilot.cancelApproachClearance(aircraft.heading, aircraft.speed, airport.elevation);
             default:
                 return [false, 'we aren\'t doing anything that can be aborted'];

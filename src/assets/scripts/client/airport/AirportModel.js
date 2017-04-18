@@ -1,4 +1,5 @@
 /* eslint-disable no-multi-spaces, func-names, camelcase, max-len, object-shorthand */
+import _ceil from 'lodash/ceil';
 import _forEach from 'lodash/forEach';
 import _get from 'lodash/get';
 import _head from 'lodash/head';
@@ -146,7 +147,7 @@ export default class AirportModel {
      * @return {number}
      */
     get minAssignableAltitude() {
-        return Math.ceil(this.elevation + 1000, -2);
+        return _ceil(this.elevation + 1000, -2);
     }
 
     /**
@@ -295,6 +296,7 @@ export default class AirportModel {
 
         _forEach(maps, (map, key) => {
             this.maps[key] = [];
+            const outputMap = this.maps[key];
             const lines = map;
 
             _forEach(lines, (line) => {
@@ -310,8 +312,7 @@ export default class AirportModel {
                     ...airportPositionAndDeclination
                 );
                 const lineVerticesRelativePositions = [...startPosition, ...endPosition];
-
-                this.maps[key].push(...lineVerticesRelativePositions);
+                outputMap.push(lineVerticesRelativePositions);
             });
         });
     }

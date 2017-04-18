@@ -40,7 +40,6 @@ import {
 } from '../utilities/unitConverters';
 import {
     FLIGHT_CATEGORY,
-    FLIGHT_MODES,
     FLIGHT_PHASE,
     PERFORMANCE,
     WAYPOINT_NAV_MODE
@@ -88,8 +87,6 @@ export default class AircraftInstanceModel {
         this.groundSpeed  = 0;          // Groundspeed (GS), knots
         this.groundTrack  = 0;          //
         this.takeoffTime  = 0;          //
-        this.rwy_dep      = null;       // Departure Runway (to use, currently using, or used)
-        this.rwy_arr      = null;       // Arrival Runway (to use, currently using, or used)
         this.approachOffset = 0;        // Distance laterally from the approach path
         this.approachDistance = 0;      // Distance longitudinally from the threshold
         this.radial       = 0;          // Angle from airport center to aircraft
@@ -150,7 +147,6 @@ export default class AircraftInstanceModel {
         this.relativePositionHistory = [];
 
         this.category = options.category; // 'arrival' or 'departure'
-        this.mode = FLIGHT_MODES.CRUISE;
 
         /**
          * the following diagram illustrates all allowed mode transitions:
@@ -180,7 +176,6 @@ export default class AircraftInstanceModel {
 
         this.buildCurrentTerrainRanges();
         this.buildRestrictedAreaLinks();
-        this.assignInitialRunway(options);
         this.parse(options);
         this.initFms(options);
 
@@ -196,18 +191,6 @@ export default class AircraftInstanceModel {
 
         this.createStrip();
         this.updateStrip();
-    }
-
-    /**
-     * The name of the currently assigned runway
-     *
-     * @property initialRunwayAssignment
-     * @return {string}
-     */
-    get initialRunwayAssignment() {
-        return this.rwy_dep
-            ? this.rwy_dep
-            : this.rwy_arr;
     }
 
     /**
@@ -284,30 +267,6 @@ export default class AircraftInstanceModel {
         });
     }
 
-    /**
-     * Initial Runway Assignment
-     *
-     * @for AircraftInstanceModel
-     * @method assignInitialRunway
-     * @param options {object}
-     */
-    assignInitialRunway(options) {
-        const runway = window.airportController.airport_get().runway;
-
-        switch (options.category) {
-            case FLIGHT_CATEGORY.ARRIVAL:
-                this.rwy_arr = runway;
-
-                break;
-            case FLIGHT_CATEGORY.DEPARTURE:
-                this.rwy_dep = runway;
-
-                break;
-            default:
-                break;
-        }
-    }
-
     parse(data) {
         // TODO: these _gets can likely be removed
         this.positionModel = _get(data, 'positionModel', this.positionModel);
@@ -324,12 +283,14 @@ export default class AircraftInstanceModel {
     }
 
     initFms(data) {
-        this.fms = new Fms(data, this.initialRunwayAssignment, this.model, this._navigationLibrary);
+        const airport = window.airportController.airport_get();
+        const initialRunway = airport.getRunway(airport.runway);
+
+        this.fms = new Fms(data, initialRunway, this.model, this._navigationLibrary);
 
         if (this.category === FLIGHT_CATEGORY.DEPARTURE) {
-            const airport = window.airportController.airport_get();
 
-            this.mode = FLIGHT_MODES.APRON;
+            this.setFlightPhase(FLIGHT_PHASE.APRON);
             this.altitude = airport.positionModel.elevation;
             this.speed = 0;
 
@@ -500,7 +461,7 @@ export default class AircraftInstanceModel {
      */
     cancelLanding() {
         // TODO: add fms.clearRunwayAssignment()?
-        this.mode = FLIGHT_MODES.CRUISE;
+        this.setFlightPhase(FLIGHT_PHASE.CRUISE);
 
         return true;
     }
@@ -588,7 +549,7 @@ export default class AircraftInstanceModel {
     isOnGround() {
         const errorAllowanceInFeet = 5;
         const airport = window.airportController.airport_get();
-        const runway = airport.getRunway(this.initialRunwayAssignment);
+        const runway = this.fms.currentRunway;
         const nearRunwayAltitude = abs(this.altitude - runway.elevation) < errorAllowanceInFeet;
         const nearAirportAltitude = abs(this.altitude - airport.elevation) < errorAllowanceInFeet;
 
@@ -622,9 +583,9 @@ export default class AircraftInstanceModel {
      * @method isTaxiing
      */
     isTaxiing() {
-        return this.mode === FLIGHT_MODES.APRON ||
-            this.mode === FLIGHT_MODES.TAXI ||
-            this.mode === FLIGHT_MODES.WAITING;
+        return this.flightPhase === FLIGHT_PHASE.APRON ||
+            this.flightPhase === FLIGHT_PHASE.TAXI ||
+            this.flightPhase === FLIGHT_PHASE.WAITING;
     }
 
     /**
@@ -634,7 +595,7 @@ export default class AircraftInstanceModel {
      * @method isTakeoff
      */
     isTakeoff() {
-        return this.isTaxiing() || this.mode === FLIGHT_MODES.TAKEOFF;
+        return this.isTaxiing() || this.flightPhase === FLIGHT_PHASE.TAKEOFF;
     }
 
     // TODO: the logic in this method can be cleaned up and simplified
@@ -643,18 +604,18 @@ export default class AircraftInstanceModel {
      * @method isVisible
      */
     isVisible() {
-        // TODO: this if/else if would be cleaner with just if (this.mode === FLIGHT_MODES.WAITING) {}
+        // TODO: this if/else if would be cleaner with just if (this.flightPhase === FLIGHT_PHASE.WAITING) {}
         // hide aircraft on twys
-        if (this.mode === FLIGHT_MODES.APRON || this.mode === FLIGHT_MODES.TAXI) {
+        if (this.flightPhase === FLIGHT_PHASE.APRON || this.flightPhase === FLIGHT_PHASE.TAXI) {
             return false;
         }
 
         if (this.isTaxiing()) {
             // show only the first aircraft in the takeoff queue
-            const runway = window.airportController.airport_get().getRunway(this.rwy_dep);
+            const runway = window.airportController.airport_get().getRunway(this.fms.departureRunway);
             const nextInRunwayQueue = runway.isAircraftNextInQueue(this);
 
-            return this.mode === FLIGHT_MODES.WAITING && nextInRunwayQueue;
+            return this.flightPhase === FLIGHT_PHASE.WAITING && nextInRunwayQueue;
         }
 
         return true;
@@ -685,7 +646,7 @@ export default class AircraftInstanceModel {
 
         const airport = window.airportController.airport_get();
         const wind = airport.wind;
-        const runway = airport.getRunway(this.initialRunwayAssignment);
+        const runway = this.fms.currentRunway;
         const angle =  abs(angle_offset(runway.angle, wind.angle));
 
         // TODO: these two bits of math should be abstracted to helper functions
@@ -835,7 +796,7 @@ export default class AircraftInstanceModel {
         this.target.speed = _defaultTo(this._calculateTargetedSpeed(), this.target.speed);
 
         // TODO: this method may not be needed but could be leveraged for housekeeping if deemed appropriate
-        // this.overrideTarget();
+        this.overrideTarget();
     }
 
     /**
@@ -845,33 +806,36 @@ export default class AircraftInstanceModel {
     overrideTarget() {
         switch (this.flightPhase) {
             case FLIGHT_PHASE.APRON:
-                this.target.altitude = this.altitude;
-                this.target.expedite = false;
-                this.target.heading = this.heading;
-                this.target.speed = 0;
+                // TODO: Is this needed?
+                // this.target.altitude = this.altitude;
+                // this.target.expedite = false;
+                // this.target.heading = this.heading;
+                // this.target.speed = 0;
 
                 break;
 
             case FLIGHT_PHASE.TAXI:
-                this.target.altitude = this.altitude;
-                this.target.expedite = false;
-                this.target.heading = this.heading;
-                this.target.speed = 0;
+                // TODO: Is this needed?
+                // this.target.altitude = this.altitude;
+                // this.target.expedite = false;
+                // this.target.heading = this.heading;
+                // this.target.speed = 0;
 
                 break;
 
             case FLIGHT_PHASE.WAITING:
-                this.target.altitude = this.altitude;
-                this.target.expedite = false;
-                this.target.heading = this.heading;
-                this.target.speed = 0;
+                // TODO: Is this needed?
+                // this.target.altitude = this.altitude;
+                // this.target.expedite = false;
+                // this.target.heading = this.heading;
+                // this.target.speed = 0;
 
                 break;
 
             case FLIGHT_PHASE.TAKEOFF: {
                 this.target.altitude = this.altitude;
 
-                if (this.speed > this.model.speed.min) {
+                if (this.speed >= this.model.speed.min) {
                     this.target.altitude = this.model.ceiling;
                 }
 
@@ -880,7 +844,7 @@ export default class AircraftInstanceModel {
                 this.target.speed = this.model.speed.min;
 
                 // TODO: Enumerate the '-999' invalid value
-                if (this.mcp.heading === -999) {
+                if (this.mcp.heading === -1) {
                     console.warn(`${this.callsign} took off with no directional instructions!`);
                 }
 
@@ -903,6 +867,7 @@ export default class AircraftInstanceModel {
                 break;
 
             case FLIGHT_PHASE.LANDING: {
+                // TODO: Is this needed?
                 // this.target.heading = this.mcp.heading;
                 // // TODO: This should be the runway elevation, not zero
                 // this.target.altitude = 0;
@@ -949,7 +914,7 @@ export default class AircraftInstanceModel {
      */
     updateFlightPhase() {
         const airportModel = window.airportController.airport_get();
-        const runwayModel = airportModel.getRunway(this.rwy_dep);
+        const runwayModel = this.fms.departureRunway;
 
         if (this._shouldEnterHoldingPattern()) {
             this.setFlightPhase(FLIGHT_PHASE.HOLD);
@@ -974,8 +939,7 @@ export default class AircraftInstanceModel {
 
             case FLIGHT_PHASE.TAKEOFF:
                 if ((this.altitude - runwayModel.elevation) > PERFORMANCE.TAKEOFF_TURN_ALTITUDE) {
-                    // TODO: setting mode here is temporary until mode is switched to `#flightPhase`. remove this
-                    this.mode = FLIGHT_MODES.CRUISE;
+                    this.pilot.raiseLandingGearAndActivateAutopilot();
                     this.setFlightPhase(FLIGHT_PHASE.CLIMB);
                 }
 
@@ -1389,7 +1353,7 @@ export default class AircraftInstanceModel {
      */
     updateLandingFinalSpeedControl() {
         let nextSpeed = this.speed;
-        const runway  = window.airportController.airport_get().getRunway(this.rwy_arr);
+        const runway  = this.fms.arrivalRunway;
         const offset = getOffset(this, runway.relativePosition, runway.angle);
         // Final Approach Speed Control
         let startSpeed = null;
@@ -1447,10 +1411,6 @@ export default class AircraftInstanceModel {
         // SPEED
         this.updateSpeedPhysics();
 
-        if (!this.positionModel) {
-            return;
-        }
-
         // TODO: abstract to AircraftPositionHistory class
         // Trailling
         if (this.relativePositionHistory.length === 0) {
@@ -1467,11 +1427,7 @@ export default class AircraftInstanceModel {
         this.updateGroundSpeedPhysics();
 
         this.distance = vlen(this.positionModel.relativePosition);
-        this.radial = vradial(this.positionModel.relativePosition);
-
-        if (this.radial < 0) {
-            this.radial += tau();
-        }
+        this.radial = radians_normalize(vradial(this.positionModel.relativePosition));
 
         // TODO: I am not sure what this has to do with aircraft Physics
         const isInsideAirspace = this.isInsideAirspace(window.airportController.airport_get());
@@ -1489,6 +1445,8 @@ export default class AircraftInstanceModel {
      */
     updateAircraftTurnPhysics() {
         if (this.isOnGround() || this.heading === this.target.heading) {
+            this.target.turn = null;
+
             return;
         }
 
@@ -1521,10 +1479,11 @@ export default class AircraftInstanceModel {
     updateAltitudePhysics() {
         this.trend = 0;
 
-        // TODO: abstract to class method
-        if (this.speed <= this.model.speed.min && this.mcp.speedMode === MCP_MODE.SPEED.N1) {
-            return;
-        }
+        // TODO: Is this needed?
+        // // TODO: abstract to class method
+        // if (this.speed <= this.model.speed.min && this.mcp.speedMode === MCP_MODE.SPEED.N1) {
+        //     return;
+        // }
 
         if (this.target.altitude < this.altitude) {
             this.decreaseAircraftAltitude();
@@ -1643,7 +1602,6 @@ export default class AircraftInstanceModel {
         const windTravelSpeed = windTravelSpeedAtSurface * (1 + (this.altitude * windIncreaseFactorPerFoot));
         const windVector = vscale(vectorize_2d(windTravelDirection), windTravelSpeed);
 
-
         // Calculate ground speed and direction
         const flightPathVector = vadd(flightThroughAirVector, windVector);
         const groundTrack = vradial(flightPathVector);
@@ -1655,6 +1613,9 @@ export default class AircraftInstanceModel {
 
         this.positionModel.setCoordinatesByBearingAndDistance(groundTrack, distanceTraveled_nm);
 
+        this.groundTrack = groundTrack;
+        this.groundSpeed = groundSpeed;
+
         // TODO: is this needed anymore?
         // TODO: Fix this to prevent drift (being blown off course)
         // if (this.isOnGround()) {
@@ -1663,7 +1624,7 @@ export default class AircraftInstanceModel {
         //     let crab_angle = 0;
         //
         //     // Compensate for crosswind while tracking a fix or on ILS
-        //     if (this.__fms__.currentWaypoint.navmode === WAYPOINT_NAV_MODE.FIX || this.mode === FLIGHT_MODES.LANDING) {
+        //     if (this.__fms__.currentWaypoint.navmode === WAYPOINT_NAV_MODE.FIX || this.flightPhase === FLIGHT_PHASE.LANDING) {
         //         // TODO: this should be abstracted to a helper function
         //         const offset = angle_offset(this.heading, wind.angle + Math.PI);
         //         crab_angle = Math.asin((wind.speed * sin(offset)) / indicatedAirspeed);
@@ -1959,25 +1920,27 @@ export default class AircraftInstanceModel {
 
         this.aircraftStripView.update(heading, altitude, this.destination, speed);
 
-        // TODO: update to look at `#flightPhase`
-        switch (this.mode) {
-            case FLIGHT_MODES.APRON:
+        switch (this.flightPhase) {
+            case FLIGHT_PHASE.APRON:
                 this.aircraftStripView.updateViewForApron(destinationDisplay, hasAltitude);
 
                 break;
-            case FLIGHT_MODES.TAXI:
+            case FLIGHT_PHASE.TAXI:
                 this.aircraftStripView.updateViewForTaxi(destinationDisplay, hasAltitude, altitudeText);
 
                 break;
-            case FLIGHT_MODES.WAITING:
+            case FLIGHT_PHASE.WAITING:
                 this.aircraftStripView.updateViewForWaiting(destinationDisplay, this.mcp.isEnabled, hasAltitude);
 
                 break;
-            case FLIGHT_MODES.TAKEOFF:
+            case FLIGHT_PHASE.TAKEOFF:
                 this.aircraftStripView.updateViewForTakeoff(destinationDisplay);
 
                 break;
-            case FLIGHT_MODES.CRUISE:
+            case FLIGHT_PHASE.CLIMB:
+            case FLIGHT_PHASE.HOLD:
+            case FLIGHT_PHASE.DESCENT:
+            case FLIGHT_PHASE.CRUISE:
                 let cruiseNavMode = WAYPOINT_NAV_MODE.FIX;
                 let headingDisplay = this.fms.currentWaypoint.name.toUpperCase();
                 const isFollowingSid = this.fms.isFollowingSid();
@@ -2011,14 +1974,15 @@ export default class AircraftInstanceModel {
                 );
 
                 break;
-            case FLIGHT_MODES.LANDING:
+            case FLIGHT_PHASE.APPROACH:
+            case FLIGHT_PHASE.LANDING:
                 destinationDisplay = this.fms.getDestinationAndRunwayName();
 
                 this.aircraftStripView.updateViewForLanding(destinationDisplay);
 
                 break;
             default:
-                throw new TypeError(`Invalid FLIGHT_MODE ${this.mode} passed to .updateStrip()`);
+                throw new TypeError(`Invalid FLIGHT_MODE ${this.flightPhase} passed to .updateStrip()`);
         }
     }
 

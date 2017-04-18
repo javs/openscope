@@ -21,7 +21,7 @@ import {
 import { radians_normalize } from '../../math/circle';
 import {
     FLIGHT_CATEGORY,
-    FLIGHT_MODES
+    FLIGHT_PHASE
 } from '../../constants/aircraftConstants';
 import { MCP_MODE } from '../ModeControl/modeControlConstants';
 
@@ -64,12 +64,22 @@ export default class Pilot {
         this._fms = fms;
 
         /**
+         * Whether the aircraft has received a clearance to conduct an approach to a runway
          *
          * @property hasApproachClearance
          * @type {boolean}
          * @default false
          */
         this.hasApproachClearance = false;
+
+        /**
+         * Whether the aircraft has received an IFR clearance to their destination
+         *
+         * @property hasDepartureClearance
+         * @type {boolean}
+         * @default false
+         */
+        this.hasDepartureClearance = false;
     }
 
     /**
@@ -140,23 +150,19 @@ export default class Pilot {
      * @param currentHeading {number}
      * @param heading        {number}                   the heading to maintain, in radians_normalize
      * @param direction      {string|null}  (optional)  the direction of turn; either 'left' or 'right'
-     * @param incremental    {boolean}      (optional)  whether the value is a numeric heading, or a number of degrees to turn
+     * @param incremental    {boolean}      (optional)  whether the value is a numeric heading, or a
+     *                                                  number of degrees to turn
      * @return {array}                                  [success of operation, readback]
      */
-    maintainHeading(currentHeading, heading, direction, incremental) {
-        let degrees;
-        let nextHeadingInRadians = degreesToRadians(heading);
+    maintainHeading(currentHeading, headingOrDegrees, direction, incremental) {
+        const nextHeadingInRadians = degreesToRadians(headingOrDegrees);
         let correctedHeading = nextHeadingInRadians;
 
-        // TODO: is this correct? if a heading with a direction is supplied, it will only be honored if it is also incremental
         if (incremental) {
-            degrees = heading;
+            // if direction is left
+            correctedHeading = radians_normalize(currentHeading - nextHeadingInRadians);
 
-            // TODO: abstract this logic
-            if (direction === 'left') {
-                // the `degreesToRadians` part can be pulled out so it is done only once
-                correctedHeading = radians_normalize(currentHeading - nextHeadingInRadians);
-            } else if (direction === 'right') {
+            if (direction === 'right') {
                 correctedHeading = radians_normalize(currentHeading + nextHeadingInRadians);
             }
         }
@@ -165,18 +171,17 @@ export default class Pilot {
         this._mcp.setHeadingHold();
         this._mcp.setHeadingFieldValue(correctedHeading);
 
-        const headingReadback = heading_to_string(correctedHeading);
+        const headingStr = heading_to_string(correctedHeading);
         const readback = {};
-        readback.log = `fly heading ${headingReadback}`;
-        readback.say = `fly heading ${radio_heading(headingReadback)}`;
+        readback.log = `fly heading ${headingStr}`;
+        readback.say = `fly heading ${radio_heading(headingStr)}`;
 
         if (incremental) {
-            readback.log = `turn ${degrees} degrees ${direction}`;
-            readback.say = `turn ${groupNumbers(degrees)} degrees ${direction}`;
-        // TODO: Im not sure this block is needed or even used
-        // } else if (direction) {
-        //     readback.log = `turn ${direction} heading ${headingReadback}`;
-        //     readback.say = `turn ${direction} heading ${radio_heading(headingReadback)}`;
+            readback.log = `turn ${headingOrDegrees} degrees ${direction}`;
+            readback.say = `turn ${groupNumbers(headingOrDegrees)} degrees ${direction}`;
+        } else if (direction) {
+            readback.log = `turn ${direction} heading ${headingStr}`;
+            readback.say = `turn ${direction} heading ${radio_heading(headingStr)}`;
         }
 
         return [true, readback];
@@ -264,6 +269,8 @@ export default class Pilot {
      * @return {array}                  [success of operation, readback]
      */
     applyDepartureProcedure(procedureId, departureRunway, airportIcao) {
+        this.hasDepartureClearance = true;
+
         const standardRouteModel = this._fms.findSidByProcedureId(procedureId);
 
         if (_isNil(standardRouteModel)) {
@@ -307,6 +314,8 @@ export default class Pilot {
      * @return {array}              [success of operation, readback]
      */
     applyNewRoute(routeString, runway) {
+        this.hasDepartureClearance = true;
+
         const isValid = this._fms.isValidRoute(routeString, runway);
 
         if (!isValid) {
@@ -394,25 +403,14 @@ export default class Pilot {
      * @for Pilot
      * @method clearedAsFiled
      * @param {Number} initialAltitude  the altitude aircraft can automatically climb to at this airport
-     * @param {Number} runwayHeading    the magnetic heading of the runway, in radians
-     * @param {Number} cruiseSpeed      the cruise speed of the aircraft, in knots
      * @return {Array}                  [success of operation, readback]
      */
-    clearedAsFiled(initialAltitude, runwayHeading, cruiseSpeed) {
-        this._mcp.enable();
-        this._mcp.setAltitudeFieldValue(initialAltitude);
-        this._mcp.setAltitudeHold();
-        this._mcp.setHeadingFieldValue(runwayHeading);
-        this._mcp.setHeadingLnav();
-        this._mcp.setSpeedFieldValue(cruiseSpeed);
-        this._mcp.setSpeedN1();
+    clearedAsFiled() {
+        this.hasDepartureClearance = true;
 
         const readback = {};
-        readback.log = `cleared to destination as filed. Climb and maintain ${initialAltitude}, expect ` +
-                `${this._fms.flightPlanAltitude} 10 minutes after departure`;
-        readback.say = `cleared to destination as filed. Climb and maintain ${radio_altitude(initialAltitude)}, ` +
-                `expect ${radio_altitude(this._fms.flightPlanAltitude)}, ${radio_spellOut('10')} minutes ` +
-                'after departure';
+        readback.log = 'cleared to destination as filed';
+        readback.say = 'cleared to destination as filed';
 
         return [true, readback];
     }
@@ -562,14 +560,14 @@ export default class Pilot {
      * @for pilot
      * @method conductInstrumentApproach
      * @param approachType {string}       the type of instrument approach (eg 'ILS', 'RNAV', 'VOR', etc)
-     * @param runway {RunwayModel}        the runway the approach ends at
+     * @param runwayModel {RunwayModel}   the runway the approach ends at
      * @param interceptAltitude {number}  the altitude to maintain until established on the localizer
      * @param heading {number}            current aircraft heading (in radians)
      * @return {array}                    [success of operation, readback]
      */
     conductInstrumentApproach(approachType, runwayModel, interceptAltitude, heading) {
         if (_isNil(runwayModel)) {
-            return [false, 'the specified runwayModel does not exist'];
+            return [false, 'the specified runway does not exist'];
         }
 
         if (this._mcp.headingMode !== MCP_MODE.HEADING.HOLD) {
@@ -594,7 +592,7 @@ export default class Pilot {
         }
 
         this._fms.exitHoldIfHolding();
-        this._fms.setArrivalRunway(runwayModel.name);
+        this._fms.setArrivalRunway(runwayModel);
         this.hasApproachClearance = true;
 
         const readback = {};
@@ -646,14 +644,40 @@ export default class Pilot {
     }
 
     /**
-     * Set Mcp speed mode for takeoff
+     * Initialize all autopilot systems after being given an IFR clearance to destination
      *
      * @for Pilot
-     * @method initiateTakeoff
+     * @method configureForTakeoff
+     * @param initialAltitude {number} the altitude aircraft can automatically climb to at this airport
+     * @param runway {RunwayModel} the runway taking off on
+     * @param cruiseSpeed {number} the cruise speed of the aircraft, in knots
      */
-    initiateTakeoff() {
-        this._mcp.setSpeedN1();
-        this._mcp.enable();
+    configureForTakeoff(initialAltitude, runway, cruiseSpeed) {
+        if (this._mcp.altitude === -1) {
+            this._mcp.setAltitudeFieldValue(initialAltitude);
+        }
+
+        if (this._mcp.altitudeMode === MCP_MODE.ALTITUDE.OFF) {
+            this._mcp.setAltitudeHold();
+        }
+
+        if (this._mcp.heading === -1) {
+            this._mcp.setHeadingFieldValue(runway.angle);
+        }
+
+        if (this._mcp.headingMode === MCP_MODE.HEADING.OFF) {
+            this._mcp.setHeadingLnav();
+        }
+
+        if (this._mcp.speed === -1) {
+            this._mcp.setSpeedFieldValue(cruiseSpeed);
+        }
+
+        if (this._mcp.speedMode === MCP_MODE.SPEED.OFF) {
+            this._mcp.setSpeedN1();
+        }
+
+        return [true, `${runway.name}, cleared for takeoff`];
     }
 
     /**
@@ -687,6 +711,18 @@ export default class Pilot {
         this._mcp.setHeadingLnav();
 
         return [true, `proceed direct ${waypointName}`];
+    }
+
+    /**
+     * End of takeoff, stop hand flying, and give the autopilot control of the aircraft
+     * Note: This should be done when the phase changes from takeoff to climb
+     * Note: The 'raise landing gear' portion has no relevance, and exists solely for specificity of context
+     *
+     * @for Pilot
+     * @method raiseLandingGearAndActivateAutopilot
+     */
+    raiseLandingGearAndActivateAutopilot() {
+        this._mcp.enable();
     }
 
     /**
@@ -789,7 +825,7 @@ export default class Pilot {
      * @return {Array} [success of operation, readback]
      */
     stopOutboundTaxiAndReturnToGate() {
-        this._fms.flightPhase = FLIGHT_MODES.APRON;
+        this._fms.flightPhase = FLIGHT_PHASE.APRON;
         // TODO: What to do with this little number....?
         // aircraft.taxi_start = 0;
 
@@ -805,8 +841,8 @@ export default class Pilot {
      */
     stopWaitingInRunwayQueueAndReturnToGate() {
         // TODO: this will likely need to be called from somewhere other than the `AircraftCommander`
-        // TODO: remove aircraft from the runway queue (`Runway.removeQueue()`)
-        this._fms.flightPhase = FLIGHT_MODES.APRON;
+        // TODO: remove aircraft from the runway queue (`Runway.removeAircraftFromQueue()`)
+        this._fms.flightPhase = FLIGHT_PHASE.APRON;
 
         return [true, 'taxiing back to the gate'];
     }
@@ -816,30 +852,30 @@ export default class Pilot {
      *
      * @for Pilot
      * @method taxiToRunway
-     * @param taxiDestination {string}  runway.name, runway has already been verified by the
-     *                                  time it is sent to this method
-     * @param isDeparture {boolean}     whether the aircraft's flightPhase is DEPARTURE
-     * @param flightPhase {string}      the flight phase of the aircraft
-     * @return {array}                  [success of operation, readback]
+     * @param taxiDestination {RunwayModel}  runway has already been verified by the
+     *                                       time it is sent to this method
+     * @param isDeparture {boolean}         whether the aircraft's flightPhase is DEPARTURE
+     * @param flightPhase {string}          the flight phase of the aircraft
+     * @return {array}                      [success of operation, readback]
      */
     taxiToRunway(taxiDestination, isDeparture, flightPhase) {
-        if (flightPhase === FLIGHT_MODES.TAXI) {
+        if (flightPhase === FLIGHT_PHASE.TAXI) {
             return [false, 'already taxiing'];
         }
 
-        if (flightPhase === FLIGHT_MODES.WAITING) {
+        if (flightPhase === FLIGHT_PHASE.WAITING) {
             return [false, 'already taxiied and waiting in runway queue'];
         }
 
-        if (!isDeparture || flightPhase !== FLIGHT_MODES.APRON) {
+        if (!isDeparture || flightPhase !== FLIGHT_PHASE.APRON) {
             return [false, 'unable to taxi'];
         }
 
         this._fms.setDepartureRunway(taxiDestination);
 
         const readback = {};
-        readback.log = `taxi to runway ${taxiDestination}`;
-        readback.say = `taxi to runway ${radio_runway(taxiDestination)}`;
+        readback.log = `taxi to runway ${taxiDestination.name}`;
+        readback.say = `taxi to runway ${radio_runway(taxiDestination.name)}`;
 
         return [true, readback];
     }
