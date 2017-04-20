@@ -682,8 +682,12 @@ export default class AirportModel {
     }
 
     /**
+     * Return the RunwayModel with the provided name
      *
-     *
+     * @for AirportModel
+     * @method getRunway
+     * @param name {string} name of the runway, eg '28R'
+     * @return {RunwayModel}
      */
     getRunway(name) {
         if (!name) {
