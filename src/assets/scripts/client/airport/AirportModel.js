@@ -435,7 +435,7 @@ export default class AirportModel {
      * @method getWind
      * @return wind {number}
      */
-    getWind() {
+    getWind = () => {
         return this.wind;
 
         // TODO: what does this method do and why do we need it?
@@ -450,36 +450,15 @@ export default class AirportModel {
         wind.speed *= extrapolate_range_clamp(-1, speed_factor, 1, 0.9, 1.05);
 
         return wind;
-    }
+    };
 
     // DEPRECATE: after `#_runwayCollection` is implemented
     /**
      * @for AirportModel
      * @method updateRunway
      */
-    updateRunway(length = 0) {
-        // this.runway = this._runwayCollection.findBestRunwayForWind(this.getWind);
-
-        // TODO: this method contains some ambiguous names. need better names.
-        const wind = this.getWind();
-        const headwind = {};
-        let best_runway = '';
-        let best_runway_headwind = -Infinity;
-
-        for (let i = 0; i < this.runways.length; i++) {
-            const runway = this.runways[i];
-            headwind[runway[0].name] = Math.cos(runway[0].angle - ra(wind.angle)) * wind.speed;
-            headwind[runway[1].name] = Math.cos(runway[1].angle - ra(wind.angle)) * wind.speed;
-        }
-
-        for (const runway in headwind) {
-            if (headwind[runway] > best_runway_headwind) {
-                best_runway = runway;
-                best_runway_headwind = headwind[runway];
-            }
-        }
-
-        this.runway = best_runway;
+    updateRunway() {
+        this.runway = this._runwayCollection.findBestRunwayForWind(this.getWind);
     }
 
     // TODO: what does this function do and why do we need it
@@ -491,14 +470,6 @@ export default class AirportModel {
     setRunwayTimeout() {
         this.timeout.runway = window.gameController.game_timeout(this.updateRunway, Math.random() * 30, this);
     }
-    //
-    // /**
-    //  * @for AirportModel
-    //  * @method selectRunway
-    //  */
-    // selectRunway() {
-    //     return this.runway;
-    // }
 
     parseTerrain(data) {
         const GEOMETRY_TYPE = {
