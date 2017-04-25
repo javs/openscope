@@ -6,6 +6,7 @@
 
 
 ### Features
+- adds [deployment-checklist](tools/documentation/deployment-checklist.md) document [#316](https://github.com/openscope/openscope/issues/316)
 
 
 
@@ -16,6 +17,7 @@
 
 
 ### Bugfixes
+- Adds additional check for `undefined` in `CommandParser` when adding args to a `CommandModel` [#364](https://github.com/openscope/openscope/issues/364)
 
 
 
