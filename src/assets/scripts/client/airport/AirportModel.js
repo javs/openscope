@@ -11,9 +11,12 @@ import RunwayModel from './runway/RunwayModel';
 import StaticPositionModel from '../base/StaticPositionModel';
 import { isValidGpsCoordinatePair } from '../base/positionModelHelpers';
 import { degreesToRadians, parseElevation } from '../utilities/unitConverters';
-import { round, sin, extrapolate_range_clamp } from '../math/core';
+import { round } from '../math/core';
 import { vlen, vsub, vadd, vscale } from '../math/vector';
-import { PERFORMANCE } from '../constants/aircraftConstants';
+import {
+    FLIGHT_CATEGORY,
+    PERFORMANCE
+} from '../constants/aircraftConstants';
 import { STORAGE_KEY } from '../constants/storageKeys';
 
 const DEFAULT_CTR_RADIUS_NM = 80;
@@ -45,6 +48,8 @@ export default class AirportModel {
 
         // TODO: All properties of this class should be instantiated here, even if they wont have values yet.
         // there is a lot of logic below that can be elimininated by simply instantiating values here.
+        this.arrivalRunway = null;
+        this.departureRunway = null;
         this.loaded = false;
         this.loading = false;
         this.name = null;
@@ -54,7 +59,6 @@ export default class AirportModel {
         this.level = null;
         this._positionModel = null;
         this.runways = [];
-        this._runwayCollection = null;
         // TODO: rename to `runwayName`
         this.runway = null;
         this.maps = {};
@@ -189,11 +193,11 @@ export default class AirportModel {
         this.loadTerrain();
         this.buildAirportAirspace(data.airspace);
         this.buildAirportRunways(data.runways);
+        this.setActiveRunwaysFromNames(data.arrivalRunway, data.departureRunway);
         this.buildAirportMaps(data.maps);
         this.buildRestrictedAreas(data.restricted);
         this.updateCurrentWind(data.wind);
-        this.updateRunway();
-        this.setRunwayTimeout();
+        this.buildRunwayMetaData();
     }
 
     /**
@@ -403,15 +407,64 @@ export default class AirportModel {
     }
 
     /**
+     * Set the airport's active arrival runway
+     *
      * @for AirportModel
-     * @method unset
+     * @method setArrivalRunway
+     * @param runwayModel {RunwayModel}
      */
-    unset() {
-        if (!this.timeout.runway) {
-            return;
+    setArrivalRunway(runwayModel) {
+        this.arrivalRunway = runwayModel;
+    }
+
+    /**
+     * Set active arrival/departure runways from the runway names
+     *
+     * @for AirportModel
+     * @method setActiveRunwaysFromNames
+     * @param arrivalRunwayName {string}
+     * @param departureRunwayName {string}
+     */
+    setActiveRunwaysFromNames(arrivalRunwayName, departureRunwayName) {
+        const arrivalRunwayModel = this.getRunway(arrivalRunwayName);
+        const departureRunwayModel = this.getRunway(departureRunwayName);
+
+        this.setArrivalRunway(arrivalRunwayModel);
+        this.setDepartureRunway(departureRunwayModel);
+    }
+
+    /**
+     * Set the airport's active departure runway
+     *
+     * @for AirportModel
+     * @method setDepartureRunway
+     * @param runwayModel {RunwayModel}
+     */
+    setDepartureRunway(runwayModel) {
+        this.departureRunway = runwayModel;
+    }
+
+    /**
+     * Get RunwayModel in use for 'arrival' or 'departure', as specified in call
+     *
+     * @for AirportModel
+     * @method getActiveRunwayForCategory
+     * @param category {string} whether the arrival or departure runway is being queried
+     * @return {RunwayModel}
+     */
+    getActiveRunwayForCategory(category) {
+        if (category === FLIGHT_CATEGORY.ARRIVAL) {
+            return this.arrivalRunway;
         }
 
-        window.gameController.game_clear_timeout(this.timeout.runway);
+        if (category === FLIGHT_CATEGORY.DEPARTURE) {
+            return this.departureRunway;
+        }
+
+        console.warn('Did not expect a query for runway that applies to aircraft of category ' +
+            `'${category}'! Returning the arrival runway (${this.arrivalRunway.name})`);
+
+        return this.arrivalRunway;
     }
 
     /**
@@ -422,37 +475,48 @@ export default class AirportModel {
     getWind = () => {
         return this.wind;
 
-        // TODO: what does this method do and why do we need it?
-        // TODO: there are a lot of magic numbers here. What are they for and what do they mean? These should be enumerated.
-        const wind = Object.assign({}, this.wind);
-        let s = 1;
-        const angle_factor = sin((s + window.gameController.game_time()) * 0.5) + sin((s + window.gameController.game_time()) * 2);
-        // TODO: why is this var getting reassigned to a magic number?
-        s = 100;
-        const speed_factor = sin((s + window.gameController.game_time()) * 0.5) + sin((s + window.gameController.game_time()) * 2);
-        wind.angle += extrapolate_range_clamp(-1, angle_factor, 1, degreesToRadians(-4), degreesToRadians(4));
-        wind.speed *= extrapolate_range_clamp(-1, speed_factor, 1, 0.9, 1.05);
-
-        return wind;
+        // // TODO: what does this method do and why do we need it?
+        // // TODO: there are a lot of magic numbers here. What are they for and what do they mean? These should be enumerated.
+        // const wind = Object.assign({}, this.wind);
+        // let s = 1;
+        // const angle_factor = sin((s + window.gameController.game_time()) * 0.5) + sin((s + window.gameController.game_time()) * 2);
+        // // TODO: why is this var getting reassigned to a magic number?
+        // s = 100;
+        // const speed_factor = sin((s + window.gameController.game_time()) * 0.5) + sin((s + window.gameController.game_time()) * 2);
+        // wind.angle += extrapolate_range_clamp(-1, angle_factor, 1, degreesToRadians(-4), degreesToRadians(4));
+        // wind.speed *= extrapolate_range_clamp(-1, speed_factor, 1, 0.9, 1.05);
+        //
+        // return wind;
     };
 
     // DEPRECATE: after `#_runwayCollection` is implemented
+    // TODO: Implement changing winds, then bring this method back to life
     /**
      * @for AirportModel
      * @method updateRunway
+     * @deprecated
      */
-    updateRunway() {
-        this.runway = this._runwayCollection.findBestRunwayForWind(this.getWind);
-    }
-
-    // TODO: what does this function do and why do we need it
-    /**
-     *
-     * @for AirportModel
-     * @method setRunwayTimeout
-     */
-    setRunwayTimeout() {
-        this.timeout.runway = window.gameController.game_timeout(this.updateRunway, Math.random() * 30, this);
+    updateRunway(length) {
+        // // TODO: this method contains some ambiguous names. need better names.
+        // const wind = this.getWind();
+        // const headwind = {};
+        //
+        // for (let i = 0; i < this.runways.length; i++) {
+        //     const runway = this.runways[i];
+        //     headwind[runway[0].name] = Math.cos(runway[0].angle - ra(wind.angle)) * wind.speed;
+        //     headwind[runway[1].name] = Math.cos(runway[1].angle - ra(wind.angle)) * wind.speed;
+        // }
+        //
+        // let best_runway = '';
+        // let best_runway_headwind = -Infinity;
+        // for (const runway in headwind) {
+        //     if (headwind[runway] > best_runway_headwind && this.getRunway(runway).length > length) {
+        //         best_runway = runway;
+        //         best_runway_headwind = headwind[runway];
+        //     }
+        // }
+        //
+        // this.runway = best_runway;
     }
 
     parseTerrain(data) {

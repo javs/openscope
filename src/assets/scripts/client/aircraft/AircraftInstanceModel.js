@@ -285,7 +285,7 @@ export default class AircraftInstanceModel {
 
     initFms(data) {
         const airport = window.airportController.airport_get();
-        const initialRunway = airport.getRunway(airport.runway);
+        const initialRunway = airport.getActiveRunwayForCategory(this.category);
 
         this.fms = new Fms(data, initialRunway, this.model, this._navigationLibrary);
 
@@ -723,16 +723,16 @@ export default class AircraftInstanceModel {
         let alt_say;
 
         if (this.category === FLIGHT_CATEGORY.ARRIVAL) {
-            const altdiff = this.altitude - this.pilot.sayTargetedAltitude();
+            const altdiff = this.altitude - this.mcp.altitude;
             const alt = digits_decimal(this.altitude, -2);
 
             if (Math.abs(altdiff) > 200) {
                 if (altdiff > 0) {
-                    alt_log = `descending through ${alt} for ${this.target.altitude}`;
-                    alt_say = `descending through ${radio_altitude(alt)} for ${radio_altitude(this.target.altitude)}`;
+                    alt_log = `descending through ${alt} for ${this.mcp.altitude}`;
+                    alt_say = `descending through ${radio_altitude(alt)} for ${radio_altitude(this.mcp.altitude)}`;
                 } else if (altdiff < 0) {
-                    alt_log = `climbing through ${alt} for ${this.target.altitude}`;
-                    alt_say = `climbing through ${radio_altitude(alt)} for ${radio_altitude(this.target.altitude)}`;
+                    alt_log = `climbing through ${alt} for ${this.mcp.altitude}`;
+                    alt_say = `climbing through ${radio_altitude(alt)} for ${radio_altitude(this.mcp.altitude)}`;
                 }
             } else {
                 alt_log = `at ${alt}`;
@@ -2005,7 +2005,14 @@ export default class AircraftInstanceModel {
                     altitude: this.fms.currentWaypoint.altitudeRestriction !== -1,
                     speed: this.fms.currentWaypoint.speedRestriction !== -1
                 };
-                destinationDisplay = this.fms.getProcedureAndExitName();
+
+                // TODO: this will need to be addressed when the AircraftStripView is refactored
+                // this block is a bandaid to prevent `destinationDisplay` from being undefined
+                destinationDisplay = this.fms.currentWaypoint.name;
+
+                if (isFollowingStar || isFollowingSid) {
+                    destinationDisplay = this.fms.getProcedureAndExitName();
+                }
 
                 if (this.fms.currentWaypoint.isHold) {
                     cruiseNavMode = WAYPOINT_NAV_MODE.HOLD;
